@@ -5,6 +5,24 @@ import random
 import y_py as Y
 from urllib.parse import parse_qs
 
+# Superhero name generator for anonymous users
+HERO_ADJECTIVES = [
+    "Swift", "Cosmic", "Thunder", "Shadow", "Mighty", "Blazing", "Quantum", "Mystic",
+    "Stellar", "Neon", "Phantom", "Crimson", "Arctic", "Volt", "Sonic", "Hyper",
+    "Turbo", "Astral", "Cyber", "Omega", "Ultra", "Mega", "Storm", "Iron",
+    "Golden", "Silver", "Crystal", "Plasma", "Nova", "Lunar", "Solar", "Atomic"
+]
+HERO_NOUNS = [
+    "Phoenix", "Falcon", "Panther", "Wolf", "Dragon", "Titan", "Hawk", "Viper",
+    "Raven", "Fox", "Lynx", "Jaguar", "Cobra", "Eagle", "Tiger", "Lion",
+    "Sphinx", "Griffin", "Hydra", "Kraken", "Ninja", "Samurai", "Knight", "Wizard",
+    "Ranger", "Voyager", "Pioneer", "Sentinel", "Guardian", "Wanderer", "Striker", "Blaze"
+]
+
+def generate_hero_name():
+    """Generate a random superhero name for anonymous users"""
+    return f"{random.choice(HERO_ADJECTIVES)}{random.choice(HERO_NOUNS)}"
+
 from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.core import signing 
@@ -26,33 +44,41 @@ class YjsCodeConsumer(AsyncJsonWebsocketConsumer):
         self.forced_disconnect = False
 
         self.user = self.scope.get("user")
+        self.is_anonymous = False
+        self.anonymous_id = None
+
+        # Parse share token from query string
+        query_string = self.scope['query_string'].decode()
+        params = parse_qs(query_string)
+        share_token = params.get('share_token', [None])[0]
 
         if not self.user or not self.user.is_authenticated:
-            await self.close(code=4001)
-            return
-
-        is_member = await self._validate_membership(self.user, self.group_id, self.project_id)
-        print(self.group_id, self.project_id, self.user.email, "is_member:", is_member)
-        if not is_member:
-
-            query_string = self.scope['query_string'].decode()
-            params = parse_qs(query_string) # Returns dict like {'token': ['...'], 'share_token': ['...']}
-            
-            # parse_qs returns a list for each key, so we take the first one
-            share_token = params.get('share_token', [None])[0]
-
+            # Check if they have a valid share token for anonymous access
             if not self._validate_share_token(share_token, self.group_id, self.project_id):
-                print(f"Connection rejected: User {self.user.email} is not a member and invalid token.")
-                await self.close(code=4003)
+                await self.close(code=4001)
                 return
+            # Anonymous user with valid share token - generate a superhero name!
+            self.is_anonymous = True
+            self.anonymous_id = f"anon_{generate_hero_name()}"
+            print(f"Anonymous user {self.anonymous_id} joining via share token")
+        else:
+            # Authenticated user - validate membership or share token
+            is_member = await self._validate_membership(self.user, self.group_id, self.project_id)
+            print(self.group_id, self.project_id, self.user.email, "is_member:", is_member)
+            if not is_member:
+                if not self._validate_share_token(share_token, self.group_id, self.project_id):
+                    print(f"Connection rejected: User {self.user.email} is not a member and invalid token.")
+                    await self.close(code=4003)
+                    return
 
         # Connection Accepted
         await self.channel_layer.group_add(self.room, self.channel_name)
         await self.channel_layer.group_add("global_connection_group", self.channel_name)
         await self.accept()
 
-        # Mark user active
-        await ASYNC_REDIS.sadd(active_set_key(self.project_id), str(self.user.pk))
+        # Mark user active - use anonymous_id for anonymous users
+        user_key = self.anonymous_id if self.is_anonymous else str(self.user.pk)
+        await ASYNC_REDIS.sadd(active_set_key(self.project_id), user_key)
         await ASYNC_REDIS.expire(active_set_key(self.project_id), 60)
         await ASYNC_REDIS.sadd(ACTIVE_PROJECTS_SET, str(self.project_id))
 
@@ -95,10 +121,13 @@ class YjsCodeConsumer(AsyncJsonWebsocketConsumer):
 
     async def disconnect(self, close_code):
         try:
-            if self.user and self.user.is_authenticated:
-                await ASYNC_REDIS.srem(active_set_key(self.project_id), str(self.user.pk))
-                await ASYNC_REDIS.srem(voice_room_key(self.project_id), str(self.user.pk))
-                await ASYNC_REDIS.delete(user_color_key(str(self.user.pk)))
+            # Get the user key (anonymous_id or user.pk)
+            user_key = self.anonymous_id if self.is_anonymous else (str(self.user.pk) if self.user and self.user.is_authenticated else None)
+            
+            if user_key:
+                await ASYNC_REDIS.srem(active_set_key(self.project_id), user_key)
+                await ASYNC_REDIS.srem(voice_room_key(self.project_id), user_key)
+                await ASYNC_REDIS.delete(user_color_key(user_key))
                 
                 await self.channel_layer.group_send(self.room, {"type": "users_changed"})
                 await self.channel_layer.group_send(self.room, {"type": "voice_room_update"})
@@ -107,7 +136,7 @@ class YjsCodeConsumer(AsyncJsonWebsocketConsumer):
                     self.room,
                     {
                         "type": "broadcast.remove_awareness",
-                        "user_id": str(self.user.pk),
+                        "user_id": user_key,
                         "sender": self.channel_name
                     }
                 )
@@ -142,25 +171,46 @@ class YjsCodeConsumer(AsyncJsonWebsocketConsumer):
             active_users = []
 
             for uid_bytes in active_user_ids:
-                uid = int(uid_bytes)
-                try:
-                    user_obj = await database_sync_to_async(User.objects.get)(pk=uid)
-                    
-                    color_data = await ASYNC_REDIS.get(user_color_key(uid))
+                uid_str = uid_bytes.decode() if isinstance(uid_bytes, bytes) else str(uid_bytes)
+                
+                # Check if this is an anonymous user
+                if uid_str.startswith("anon_"):
+                    color_data = await ASYNC_REDIS.get(user_color_key(uid_str))
                     if color_data:
                         color = json.loads(color_data)
                     else:
                         color = random.choice(settings.USER_COLORS)
-                        await ASYNC_REDIS.set(user_color_key(uid), json.dumps(color))
-
+                        await ASYNC_REDIS.set(user_color_key(uid_str), json.dumps(color))
+                    
+                    # Extract the superhero name (remove "anon_" prefix)
+                    hero_name = uid_str[5:]
                     active_users.append({
-                        "id": str(user_obj.pk),
-                        "email": user_obj.email,
+                        "id": uid_str,
+                        "email": f"🦸 {hero_name}",
                         "color": color["color"],
                         "colorLight": color["light"]
                     })
-                except User.DoesNotExist:
-                    continue
+                else:
+                    # Authenticated user
+                    try:
+                        uid = int(uid_str)
+                        user_obj = await database_sync_to_async(User.objects.get)(pk=uid)
+                        
+                        color_data = await ASYNC_REDIS.get(user_color_key(uid))
+                        if color_data:
+                            color = json.loads(color_data)
+                        else:
+                            color = random.choice(settings.USER_COLORS)
+                            await ASYNC_REDIS.set(user_color_key(uid), json.dumps(color))
+
+                        active_users.append({
+                            "id": str(user_obj.pk),
+                            "email": user_obj.email,
+                            "color": color["color"],
+                            "colorLight": color["light"]
+                        })
+                    except (User.DoesNotExist, ValueError):
+                        continue
 
             await self.send_json({"type": "connection", "users": active_users})
         except Exception as e:
@@ -217,34 +267,46 @@ class YjsCodeConsumer(AsyncJsonWebsocketConsumer):
                 message = msg.get("message", "").strip()
                 if not message or len(message) > 1000: return
                 
-                user_obj = await database_sync_to_async(User.objects.get)(pk=self.user.pk)
-                color_data = await ASYNC_REDIS.get(f"user_color:{self.user.pk}")
+                user_key = self.anonymous_id if self.is_anonymous else str(self.user.pk)
+                
+                if self.is_anonymous:
+                    # Use the superhero name for chat
+                    hero_name = self.anonymous_id[5:]
+                    user_email = f"🦸 {hero_name}"
+                else:
+                    user_obj = await database_sync_to_async(User.objects.get)(pk=self.user.pk)
+                    user_email = user_obj.email
+                
+                color_data = await ASYNC_REDIS.get(f"user_color:{user_key}")
                 color = json.loads(color_data) if color_data else {"color": "#30bced", "light": "#30bced33"}
                 
                 await self.channel_layer.group_send(self.room, {
                     "type": "broadcast.chat_message",
                     "message": message,
-                    "user_id": str(self.user.pk),
-                    "user_email": user_obj.email,
+                    "user_id": user_key,
+                    "user_email": user_email,
                     "color": color["color"],
                     "timestamp": asyncio.get_event_loop().time()
                 })
 
             elif mtype == "join_voice":
-                await ASYNC_REDIS.sadd(voice_room_key(self.project_id), str(self.user.pk))
+                user_key = self.anonymous_id if self.is_anonymous else str(self.user.pk)
+                await ASYNC_REDIS.sadd(voice_room_key(self.project_id), user_key)
                 await self.channel_layer.group_send(self.room, {"type": "voice_room_update"})
 
             elif mtype == "leave_voice":
-                await ASYNC_REDIS.srem(voice_room_key(self.project_id), str(self.user.pk))
+                user_key = self.anonymous_id if self.is_anonymous else str(self.user.pk)
+                await ASYNC_REDIS.srem(voice_room_key(self.project_id), user_key)
                 await self.channel_layer.group_send(self.room, {"type": "voice_room_update"})
 
             elif mtype == "voice_signal":
                 target_user = msg.get("target_user")
                 signal_data = msg.get("signal_data")
+                user_key = self.anonymous_id if self.is_anonymous else str(self.user.pk)
                 if target_user and signal_data:
                     await self.channel_layer.group_send(self.room, {
                         "type": "broadcast.voice_signal",
-                        "from_user": str(self.user.pk),
+                        "from_user": user_key,
                         "target_user": target_user,
                         "signal_data": signal_data,
                         "sender": self.channel_name
@@ -279,7 +341,8 @@ class YjsCodeConsumer(AsyncJsonWebsocketConsumer):
 
     async def broadcast_voice_signal(self, event):
         if event.get("sender") == self.channel_name: return
-        if event["target_user"] == str(self.user.pk):
+        user_key = self.anonymous_id if self.is_anonymous else str(self.user.pk)
+        if event["target_user"] == user_key:
             await self.send_json({
                 "type": "voice_signal",
                 "from_user": event["from_user"],
@@ -291,12 +354,18 @@ class YjsCodeConsumer(AsyncJsonWebsocketConsumer):
             voice_user_ids = await ASYNC_REDIS.smembers(voice_room_key(self.project_id))
             voice_users = []
             for uid_bytes in voice_user_ids:
-                uid = int(uid_bytes)
-                try:
-                    user_obj = await database_sync_to_async(User.objects.get)(pk=uid)
-                    voice_users.append({"id": str(user_obj.pk), "email": user_obj.email})
-                except User.DoesNotExist:
-                    continue
+                uid_str = uid_bytes.decode() if isinstance(uid_bytes, bytes) else str(uid_bytes)
+                
+                if uid_str.startswith("anon_"):
+                    hero_name = uid_str[5:]
+                    voice_users.append({"id": uid_str, "email": f"🦸 {hero_name}"})
+                else:
+                    try:
+                        uid = int(uid_str)
+                        user_obj = await database_sync_to_async(User.objects.get)(pk=uid)
+                        voice_users.append({"id": str(user_obj.pk), "email": user_obj.email})
+                    except (User.DoesNotExist, ValueError):
+                        continue
             await self.send_json({"type": "voice_room_update", "participants": voice_users})
         except Exception as e:
             print(f"Error sending voice room update: {e}")
@@ -324,7 +393,8 @@ class YjsCodeConsumer(AsyncJsonWebsocketConsumer):
         try:
             while True:
                 await asyncio.sleep(settings.HEARTBEAT_INTERVAL)
-                if self.user and self.user.is_authenticated:
+                # Keep active set alive for both authenticated and anonymous users
+                if self.is_anonymous or (self.user and self.user.is_authenticated):
                     await ASYNC_REDIS.expire(active_set_key(self.project_id), 60)
         except asyncio.CancelledError:
             return

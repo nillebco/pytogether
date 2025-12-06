@@ -12,9 +12,14 @@ export default function SharedProjectHandler() {
         const res = await api.post('/api/validate-share-link/', { token });
         
         if (res.data.valid) {
-            // Redirect to the IDE with the necessary state
+            // Check if user is authenticated
+            const isAuthenticated = !!sessionStorage.getItem("access_token");
+            
+            // Redirect to the appropriate IDE route based on authentication status
             // PyIDE will read 'shareToken' from state and attach it to the WebSocket connection
-            navigate('/ide', {
+            const targetRoute = isAuthenticated ? '/ide' : '/shared-ide';
+            
+            navigate(targetRoute, {
                 state: {
                     groupId: res.data.group_id,
                     projectId: res.data.project_id,
@@ -27,7 +32,9 @@ export default function SharedProjectHandler() {
       } catch (err) {
         console.error("Invalid link", err);
         alert("This invitation link is invalid or has expired.");
-        navigate('/home');
+        // Redirect to landing page for anonymous users, home for authenticated
+        const isAuthenticated = !!sessionStorage.getItem("access_token");
+        navigate(isAuthenticated ? '/home' : '/');
       }
     };
 

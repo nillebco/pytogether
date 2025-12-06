@@ -128,11 +128,12 @@ def generate_share_link(request, group_id, project_id):
     })
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def validate_share_link(request):
     """
     Exchanges a token for Project Details.
     Used when a guest clicks the /join-shared/:token link.
+    Accessible without authentication to allow anonymous session joining.
     """
     token = request.data.get('token')
     if not token:

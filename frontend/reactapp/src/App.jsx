@@ -38,14 +38,10 @@ function App() {
         
         {/* Read-only Snippet Route */}
         <Route path="/snippet/:token" element={<OfflinePlayground />} />
-        {/* Shared Project Join Route */}
-        <Route path="/join-shared/:token" 
-          element={
-            <ProtectedRoute>
-              <SharedProjectHandler />
-            </ProtectedRoute>
-          } 
-        />
+        {/* Shared Project Join Route - Accessible without login */}
+        <Route path="/join-shared/:token" element={<SharedProjectHandler />} />
+        {/* Shared IDE Route - For anonymous users joining via share link */}
+        <Route path="/shared-ide" element={<PyIDE />} />
 
         <Route path="/home" 
           element={

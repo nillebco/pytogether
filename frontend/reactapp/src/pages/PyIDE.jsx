@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { jwtDecode } from "jwt-decode";
 import { saveAs } from 'file-saver';
@@ -9,6 +9,7 @@ import { Send, Check, X, Edit2, Pencil, Highlighter, Eraser, Eye, EyeOff, Trash2
 // CodeMirror
 import CodeMirror from "@uiw/react-codemirror";
 import { python } from "@codemirror/lang-python";
+import { javascript } from "@codemirror/lang-javascript";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { StateField, StateEffect } from "@codemirror/state";
 import { Decoration, EditorView } from "@codemirror/view";
@@ -26,6 +27,7 @@ import api from "../../axiosConfig";
 import CodeLayout from "../components/CodeLayout";
 import { ShareModal } from "../components/Modals/ShareModal";
 import { usePyRunner } from "../hooks/usePyRunner";
+import { useTsRunner } from "../hooks/useTsRunner";
 import { useVoiceChat } from "../hooks/useVoiceChat";
 import { useSharedCanvas } from "../hooks/useSharedCanvas";
 
@@ -45,6 +47,20 @@ const errorLineField = StateField.define({
   },
   provide: f => EditorView.decorations.from(f)
 });
+
+// Superhero name generator for anonymous users
+const HERO_ADJECTIVES = [
+  "Swift", "Cosmic", "Thunder", "Shadow", "Mighty", "Blazing", "Quantum", "Mystic",
+  "Stellar", "Neon", "Phantom", "Crimson", "Arctic", "Volt", "Sonic", "Hyper",
+  "Turbo", "Astral", "Cyber", "Omega", "Ultra", "Mega", "Storm", "Iron",
+  "Golden", "Silver", "Crystal", "Plasma", "Nova", "Lunar", "Solar", "Atomic"
+];
+const HERO_NOUNS = [
+  "Phoenix", "Falcon", "Panther", "Wolf", "Dragon", "Titan", "Hawk", "Viper",
+  "Raven", "Fox", "Lynx", "Jaguar", "Cobra", "Eagle", "Tiger", "Lion",
+  "Sphinx", "Griffin", "Hydra", "Kraken", "Ninja", "Samurai", "Knight", "Wizard",
+  "Ranger", "Voyager", "Pioneer", "Sentinel", "Guardian", "Wanderer", "Striker", "Blaze"
+];
 
 export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, projectName: propProjectName }) {
   const location = useLocation();
@@ -78,17 +94,49 @@ export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, 
   const chatRef = useRef(null);
   const lastPingRef = useRef(null);
   
-  // User ID
+  // User ID - generate stable superhero name if not logged in
   const token = sessionStorage.getItem("access_token");
-  const myUserId = token ? jwtDecode(token).user_id : "anon";
+  const myUserId = useMemo(() => {
+    if (token) {
+      return jwtDecode(token).user_id;
+    }
+    // Generate or retrieve a stable superhero name for this session
+    let anonId = sessionStorage.getItem("anon_user_id");
+    if (!anonId) {
+      const adj = HERO_ADJECTIVES[Math.floor(Math.random() * HERO_ADJECTIVES.length)];
+      const noun = HERO_NOUNS[Math.floor(Math.random() * HERO_NOUNS.length)];
+      anonId = `anon_${adj}${noun}`;
+      sessionStorage.setItem("anon_user_id", anonId);
+    }
+    return anonId;
+  }, [token]);
   
   // Get shareToken from location state (if joining via link)
   const shareToken = location.state?.shareToken;
 
-  // CUSTOM HOOKS
-  const runner = usePyRunner();
+  // Language selection state
+  const [language, setLanguage] = useState("python");
+
+  // CUSTOM HOOKS - initialize both runners
+  const pyRunner = usePyRunner();
+  const tsRunner = useTsRunner();
   const voice = useVoiceChat(wsRef, myUserId);
   const canvas = useSharedCanvas(ydocRef, isConnected);
+
+  // Select the active runner based on language
+  const runner = language === "python" ? pyRunner : tsRunner;
+
+  // Get the appropriate CodeMirror language extension
+  const languageExtension = useMemo(() => {
+    return language === "python" ? python() : javascript({ typescript: true });
+  }, [language]);
+
+  // Handle language switch
+  const handleLanguageChange = (newLang) => {
+    if (newLang === language) return;
+    setLanguage(newLang);
+    runner.clearConsole();
+  };
 
   // Global error boundary for CodeMirror crashes
   useEffect(() => {
@@ -180,8 +228,8 @@ export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, 
   useEffect(() => {
     if (!groupId || !projectId) {
       console.error('Missing groupId or projectId');
-      alert("Could not connect to the project. Redirecting back to groups.");
-      navigate("/home");
+      alert("Could not connect to the project. Redirecting back.");
+      navigate(token ? "/home" : "/");
       return;
     }
 
@@ -205,11 +253,15 @@ export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, 
     // Setup WebSocket
     const wsBase = import.meta.env.VITE_WS_BASE_URL || "ws://localhost:8000";
     
-    // Logic to include share_token if present
-    let tokenParam = token ? `?token=${token}` : "?";
-    if (shareToken) {
-        tokenParam += `&share_token=${shareToken}`;
+    // Build query params - handle both authenticated and anonymous cases
+    const params = new URLSearchParams();
+    if (token) {
+      params.append('token', token);
     }
+    if (shareToken) {
+      params.append('share_token', shareToken);
+    }
+    const tokenParam = params.toString() ? `?${params.toString()}` : '';
 
     const wsUrl = `${wsBase}/ws/groups/${groupId}/projects/${projectId}/code/${tokenParam}`;
     const ws = new WebSocket(wsUrl);
@@ -272,7 +324,7 @@ export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, 
             } catch(e) { console.error("Failed to apply Yjs update", e); }
             break;
 
-          case 'sync':
+          case 'sync': {
             // Full document sync
             const stateBytes = Uint8Array.from(atob(data.ydoc_b64), c => c.charCodeAt(0));
             Y.applyUpdate(ydoc, stateBytes, 'server');
@@ -295,6 +347,7 @@ export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, 
               }
             }, 3000);
             break;
+          }
             
           case 'awareness':
             setTimeout(() => {
@@ -311,7 +364,7 @@ export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, 
             }}, 400);
             break;
           
-          case 'remove_awareness':
+          case 'remove_awareness': {
             const uid = data.user_id;
             const clientsToRemove = [];
             awareness.getStates().forEach((state, clientID) => {
@@ -322,6 +375,7 @@ export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, 
                 awareness.emit('change', [{ added: [], updated: [], removed: clientsToRemove }, 'remote']);
             }
             break;
+          }
 
           case 'initial':
             console.log("INITIAL")
@@ -348,11 +402,12 @@ export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, 
             }
             break;
             
-          case 'chat_message':
+          case 'chat_message': {
             // Convert to string to ensure safe comparison between ints and strings
             const isMe = String(data.user_id) === String(myUserId);
             setChatMessages(p => [...p, { ...data, timestamp: new Date(data.timestamp * 1000), isMe }]);
             break;
+          }
             
           case 'voice_room_update':
             voice.setParticipants(data.participants || []);
@@ -376,8 +431,8 @@ export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, 
     ws.onerror = (error) => {
         console.error('WebSocket error:', error);
         setIsConnected(false);
-        alert("Failed to connect to the project. Redirecting back to groups.");
-        navigate("/home");
+        alert("Failed to connect to the project. Redirecting back.");
+        navigate(token ? "/home" : "/");
     };
 
     ws.onclose = (event) => { 
@@ -386,7 +441,7 @@ export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, 
         if (event.code === 4000) {
             alert("You have been disconnected due to a server update. All your work has been saved.");
         }
-        if (!isConnected) navigate("/home");
+        if (!isConnected) navigate(token ? "/home" : "/");
         setIsConnected(false); 
         voice.leaveCall(); 
     };
@@ -496,9 +551,16 @@ export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, 
   const handleDownload = (ext) => {
      if (!ytextRef.current) return;
      const content = ytextRef.current.toString();
-     const filename = (projectName || 'main').replace(/[^a-z0-9]/gi, '_').toLowerCase() + ext;
      
-     if (ext === '.py') saveAs(new Blob([content], {type: 'text/python'}), filename);
+     // Use language-appropriate extension for source files
+     let actualExt = ext;
+     if (ext === '.py' && language === 'typescript') actualExt = '.ts';
+     if (ext === '.ts' && language === 'python') actualExt = '.py';
+     
+     const filename = (projectName || 'main').replace(/[^a-z0-9]/gi, '_').toLowerCase() + actualExt;
+     
+     if (actualExt === '.py') saveAs(new Blob([content], {type: 'text/python'}), filename);
+     else if (actualExt === '.ts') saveAs(new Blob([content], {type: 'text/typescript'}), filename);
      else if (ext === '.txt') saveAs(new Blob([content], {type: 'text/plain'}), filename);
      else if (ext === '.pdf') {
          const doc = new jsPDF();
@@ -511,6 +573,36 @@ export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, 
      }
   };
 
+  // Language selector component
+  const languageSelector = (
+    <div className="flex items-center gap-1 p-1 bg-gray-700 rounded-lg">
+      <button
+        onClick={() => handleLanguageChange('python')}
+        disabled={runner.isRunning || runner.isLoading}
+        className={`px-3 py-1.5 rounded text-sm font-medium transition-all duration-200 flex items-center gap-1.5 ${
+          language === 'python'
+            ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+            : 'text-gray-400 hover:text-gray-200 hover:bg-gray-600'
+        } disabled:opacity-50 disabled:cursor-not-allowed`}
+      >
+        <span className="text-base">🐍</span>
+        Python
+      </button>
+      <button
+        onClick={() => handleLanguageChange('typescript')}
+        disabled={runner.isRunning || runner.isLoading}
+        className={`px-3 py-1.5 rounded text-sm font-medium transition-all duration-200 flex items-center gap-1.5 ${
+          language === 'typescript'
+            ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+            : 'text-gray-400 hover:text-gray-200 hover:bg-gray-600'
+        } disabled:opacity-50 disabled:cursor-not-allowed`}
+      >
+        <span className="text-base">📘</span>
+        TypeScript
+      </button>
+    </div>
+  );
+
   // RENDER CONTENT SLOTS
   const headerSlot = isEditingName ? (
     <>
@@ -519,18 +611,21 @@ export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, 
         <button onClick={() => setIsEditingName(false)} className="p-1 text-red-400"><X className="h-4 w-4"/></button>
     </>
   ) : (
-    <>
-        <h2 className="text-lg font-medium text-white truncate">{projectName}</h2>
-        <button onClick={() => { setTempName(projectName); setIsEditingName(true); }} className="p-1 text-gray-400 hover:text-gray-200"><Edit2 className="h-4 w-4"/></button>
-        <button 
-            onClick={() => setShowShareModal(true)} 
-            className="p-1.5 ml-2 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 rounded-md transition-colors flex items-center gap-1.5"
-            title="Share Project"
-        >
-            <Share2 className="h-3.5 w-3.5" />
-            <span className="text-xs font-medium hidden sm:inline">Share</span>
-        </button>
-    </>
+    <div className="flex flex-col items-start gap-2">
+        <div className="flex items-center gap-2">
+            <h2 className="text-lg font-medium text-white truncate">{projectName}</h2>
+            <button onClick={() => { setTempName(projectName); setIsEditingName(true); }} className="p-1 text-gray-400 hover:text-gray-200"><Edit2 className="h-4 w-4"/></button>
+            <button 
+                onClick={() => setShowShareModal(true)} 
+                className="p-1.5 ml-2 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 rounded-md transition-colors flex items-center gap-1.5"
+                title="Share Project"
+            >
+                <Share2 className="h-3.5 w-3.5" />
+                <span className="text-xs font-medium hidden sm:inline">Share</span>
+            </button>
+        </div>
+        {languageSelector}
+    </div>
   );
 
   const editorSlot = (
@@ -560,7 +655,7 @@ export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, 
             className="h-full text-sm"
             theme={oneDark}
             extensions={[
-              python(),
+              languageExtension,
               yCollab(ytextRef.current, awarenessRef.current, { undoManager: codeUndoManagerRef.current }),
               errorLineField
             ]}
@@ -752,7 +847,8 @@ export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, 
             onBack={() => {
                 if (runner.isRunning) { runner.stopCode(); }
                 if (wsRef.current) wsRef.current.close();
-                navigate('/home');
+                // Navigate to home for authenticated users, landing page for anonymous
+                navigate(token ? '/home' : '/');
             }}
             isConnected={isConnected}
             connectedUsers={connectedUsers}
@@ -762,6 +858,8 @@ export default function PyIDE({ groupId: propGroupId, projectId: propProjectId, 
             onRun={() => runner.runCode(ytextRef.current ? ytextRef.current.toString() : code)}
             onStop={runner.stopCode}
             onDownloadOption={handleDownload}
+            
+            language={language}
         />
 
         <ShareModal 
