@@ -25,8 +25,14 @@ export default function CodeLayout({
   connectedUsers = [],
   
   // Download/Menu
-  onDownloadOption
+  onDownloadOption,
+  
+  // Language support
+  language = "python"
 }) {
+  // Determine file extension and name based on language
+  const fileExtension = language === "typescript" ? ".ts" : ".py";
+  const fileName = language === "typescript" ? "main.ts" : "main.py";
   const [consoleWidth, setConsoleWidth] = useState(384);
   const [isDragging, setIsDragging] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -150,7 +156,7 @@ export default function CodeLayout({
               {showDownloadMenu && (
                 <div className="absolute left-0 mt-2 w-48 bg-gray-700 border border-gray-600 rounded-lg shadow-xl z-50">
                   <ul className="py-1">
-                    {['.py', '.txt', '.docx', '.pdf'].map(ext => (
+                    {[fileExtension, '.txt', '.docx', '.pdf'].map(ext => (
                       <li key={ext} onClick={() => { onDownloadOption(ext); setShowDownloadMenu(false); }} 
                           className="px-4 py-2 text-sm text-gray-200 hover:bg-gray-600 cursor-pointer">
                         Download as {ext}
@@ -205,7 +211,7 @@ export default function CodeLayout({
         {/* EDITOR AREA */}
         <div className="flex-1 flex flex-col border-r border-gray-700 min-w-0 relative">
           <div className="bg-gray-800 px-4 py-2 border-b border-gray-700 flex items-center justify-between z-20 flex-shrink-0">
-            <h2 className="text-sm font-medium text-gray-300">main.py</h2>
+            <h2 className="text-sm font-medium text-gray-300">{fileName}</h2>
             <div className="flex items-center space-x-2">
                <div className={`h-2 w-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-orange-400'}`}></div>
                <span className="text-xs text-gray-500">{isConnected ? 'Synced' : 'Modified'}</span>

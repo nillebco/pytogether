@@ -26,6 +26,10 @@ export default defineConfig({
     format: 'es',
   },
 
+  optimizeDeps: {
+    include: ['typescript', 'comlink'],
+  },
+
   server: {
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',

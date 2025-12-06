@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { saveAs } from 'file-saver';
 import { jsPDF } from "jspdf";
@@ -8,6 +8,7 @@ import { Send, Edit2, Check, X, Pencil, Eraser, Highlighter, RotateCcw, RotateCw
 // CodeMirror
 import CodeMirror from "@uiw/react-codemirror";
 import { python } from "@codemirror/lang-python";
+import { javascript } from "@codemirror/lang-javascript";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { StateField, StateEffect } from "@codemirror/state";
 import { Decoration, EditorView } from "@codemirror/view";
@@ -18,6 +19,7 @@ import api from "../../axiosConfig";
 // Components & Hooks
 import CodeLayout from "../components/CodeLayout";
 import { usePyRunner } from "../hooks/usePyRunner";
+import { useTsRunner } from "../hooks/useTsRunner";
 import { useLocalCanvas } from "../hooks/useLocalCanvas";
 
 // Error line decoration
@@ -38,20 +40,49 @@ const errorLineField = StateField.define({
 });
 
 // Default text for new users
-const DEFAULT_CODE = `# Welcome to the Offline Playground!
+const DEFAULT_PYTHON_CODE = `# Welcome to the Offline Playground!
 # You can write and run Python code right here in your browser.
 # Data is saved to your browser's local storage.
 
 name = input("Whats your name? ")
 print(f"Hello, {name}!")`;
 
+const DEFAULT_TS_CODE = `// Welcome to the Offline Playground!
+// You can write and run TypeScript code right here in your browser.
+// Data is saved to your browser's local storage.
+
+interface Person {
+  name: string;
+  age: number;
+}
+
+const greet = (person: Person): string => {
+  return \`Hello, \${person.name}! You are \${person.age} years old.\`;
+};
+
+const user: Person = { name: "World", age: 25 };
+console.log(greet(user));
+
+// Try some TypeScript features:
+const numbers: number[] = [1, 2, 3, 4, 5];
+const doubled = numbers.map(n => n * 2);
+console.log("Doubled:", doubled);`;
+
 export default function OfflinePlayground() {
   const navigate = useNavigate();
   const { token } = useParams(); // Capture the token from the URL if present
+  
+  // Language selection state
+  const [language, setLanguage] = useState(() => {
+    return localStorage.getItem("offline_language") || "python";
+  });
+
   const [code, setCode] = useState(() => {
     // If we are loading a specific snippet (token exists), start with loading text
     if (token) return "# Loading snippet...";
-    return localStorage.getItem("offline_code") || DEFAULT_CODE;
+    const savedLang = localStorage.getItem("offline_language") || "python";
+    const savedCode = localStorage.getItem(`offline_code_${savedLang}`);
+    return savedCode || (savedLang === "python" ? DEFAULT_PYTHON_CODE : DEFAULT_TS_CODE);
   });
 
   const [projectName, setProjectName] = useState(() => {
@@ -67,9 +98,38 @@ export default function OfflinePlayground() {
   // Refs
   const editorViewRef = useRef(null);
   
-  // Hooks
-  const runner = usePyRunner();
+  // Hooks - initialize both runners
+  const pyRunner = usePyRunner();
+  const tsRunner = useTsRunner();
   const canvas = useLocalCanvas();
+
+  // Select the active runner based on language
+  const runner = language === "python" ? pyRunner : tsRunner;
+
+  // Get the appropriate CodeMirror language extension
+  const languageExtension = useMemo(() => {
+    return language === "python" ? python() : javascript({ typescript: true });
+  }, [language]);
+
+  // Handle language switch
+  const handleLanguageChange = (newLang) => {
+    if (newLang === language) return;
+    
+    // Save current code for current language
+    localStorage.setItem(`offline_code_${language}`, code);
+    
+    // Load code for new language
+    const savedCode = localStorage.getItem(`offline_code_${newLang}`);
+    const defaultCode = newLang === "python" ? DEFAULT_PYTHON_CODE : DEFAULT_TS_CODE;
+    setCode(savedCode || defaultCode);
+    
+    // Update language
+    setLanguage(newLang);
+    localStorage.setItem("offline_language", newLang);
+    
+    // Clear console on language switch
+    runner.clearConsole();
+  };
 
   useEffect(() => {
     if (token) {
@@ -98,9 +158,9 @@ export default function OfflinePlayground() {
 
   useEffect(() => {
     if (!isLoadingSnippet && !token) {
-        localStorage.setItem("offline_code", code);
+        localStorage.setItem(`offline_code_${language}`, code);
     }
-  }, [code, isLoadingSnippet, token]);
+  }, [code, isLoadingSnippet, token, language]);
 
   useEffect(() => {
     if (!isLoadingSnippet && !token) {
@@ -145,9 +205,15 @@ export default function OfflinePlayground() {
 
   const handleDownload = (ext) => {
     const content = code;
-    const filename = (projectName || 'offline').replace(/[^a-z0-9]/gi, '_').toLowerCase() + ext;
+    // Use language-appropriate extension for source files
+    let actualExt = ext;
+    if (ext === '.py' && language === 'typescript') actualExt = '.ts';
+    if (ext === '.ts' && language === 'python') actualExt = '.py';
     
-    if (ext === '.py') saveAs(new Blob([content], {type: 'text/python'}), filename);
+    const filename = (projectName || 'offline').replace(/[^a-z0-9]/gi, '_').toLowerCase() + actualExt;
+    
+    if (actualExt === '.py') saveAs(new Blob([content], {type: 'text/python'}), filename);
+    else if (actualExt === '.ts') saveAs(new Blob([content], {type: 'text/typescript'}), filename);
     else if (ext === '.txt') saveAs(new Blob([content], {type: 'text/plain'}), filename);
     else if (ext === '.pdf') {
       const doc = new jsPDF();
@@ -171,6 +237,36 @@ export default function OfflinePlayground() {
 
   // --- RENDER SLOTS ---
 
+  // Language selector component
+  const languageSelector = (
+    <div className="flex items-center gap-1 p-1 bg-gray-700 rounded-lg">
+      <button
+        onClick={() => handleLanguageChange('python')}
+        disabled={runner.isRunning || runner.isLoading}
+        className={`px-3 py-1.5 rounded text-sm font-medium transition-all duration-200 flex items-center gap-1.5 ${
+          language === 'python'
+            ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+            : 'text-gray-400 hover:text-gray-200 hover:bg-gray-600'
+        } disabled:opacity-50 disabled:cursor-not-allowed`}
+      >
+        <span className="text-base">🐍</span>
+        Python
+      </button>
+      <button
+        onClick={() => handleLanguageChange('typescript')}
+        disabled={runner.isRunning || runner.isLoading}
+        className={`px-3 py-1.5 rounded text-sm font-medium transition-all duration-200 flex items-center gap-1.5 ${
+          language === 'typescript'
+            ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+            : 'text-gray-400 hover:text-gray-200 hover:bg-gray-600'
+        } disabled:opacity-50 disabled:cursor-not-allowed`}
+      >
+        <span className="text-base">📘</span>
+        TypeScript
+      </button>
+    </div>
+  );
+
   const headerSlot = isEditingName ? (
     <>
       <input 
@@ -182,16 +278,19 @@ export default function OfflinePlayground() {
       <button onClick={() => setIsEditingName(false)} className="p-1 text-red-400"><X className="h-4 w-4"/></button>
     </>
   ) : (
-    <div className="flex flex-col items-start">
+    <div className="flex flex-col items-start gap-2">
         <div className="flex items-center gap-2">
             <h2 className="text-lg font-medium text-white truncate">{projectName}</h2>
             <button onClick={() => { setTempName(projectName); setIsEditingName(true); }} className="p-1 text-gray-400 hover:text-gray-200"><Edit2 className="h-4 w-4"/></button>
         </div>
-        {token && (
-            <span className="text-[10px] text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full flex items-center gap-1 border border-blue-500/20">
-                <FileDown className="h-3 w-3" /> Read-Only Snippet (Edits are local)
-            </span>
-        )}
+        <div className="flex items-center gap-2">
+            {languageSelector}
+            {token && (
+                <span className="text-[10px] text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full flex items-center gap-1 border border-blue-500/20">
+                    <FileDown className="h-3 w-3" /> Read-Only Snippet (Edits are local)
+                </span>
+            )}
+        </div>
     </div>
   );
 
@@ -239,7 +338,7 @@ export default function OfflinePlayground() {
         height="100%"
         className="h-full text-sm"
         theme={oneDark}
-        extensions={[python(), errorLineField]}
+        extensions={[languageExtension, errorLineField]}
         onChange={(value) => {
           setCode(value);
           if (runner.errorLine) runner.setErrorLine(null);
@@ -328,6 +427,9 @@ export default function OfflinePlayground() {
       onRun={() => runner.runCode(code)}
       onStop={runner.stopCode}
       onDownloadOption={handleDownload}
+      
+      // Language
+      language={language}
     />
   );
 }
