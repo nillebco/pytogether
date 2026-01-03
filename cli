@@ -51,6 +51,8 @@ show_usage() {
     echo "  scpto [-h hostname] <file> <dest> - Copy file to server (default: terraform output)"
     echo "  deploy [-h hostname]       - Deploy backend to server (builds on server)"
     echo "  deploy-registry [-h hostname] - Deploy using container registry"
+    echo "  build-frontend <api-domain> - Build frontend with specified API domain"
+    echo "  deploy-frontend             - Deploy frontend (builds and deploys to Cloudflare Pages)"
     echo "  help                       - Show this help message"
     echo ""
     echo "Examples:"
@@ -65,6 +67,8 @@ show_usage() {
     echo "  $0 deploy"
     echo "  $0 deploy -h 192.168.1.100"
     echo "  $0 deploy-registry"
+    echo "  $0 build-frontend coco.api.example.com"
+    echo "  $0 deploy-frontend"
 }
 
 # Check if subcommand is provided
@@ -178,6 +182,49 @@ case "$subcommand" in
         ;;
     "gen-ssh-key")
         ssh-keygen -t rsa -b 4096 -C "$super_admin" -f $ssh_key_file.pub -N ""
+        ;;
+    "build-frontend")
+        if [ $# -eq 0 ]; then
+            echo "Error: API domain is required"
+            echo "Usage: $0 build-frontend <api-domain>"
+            echo "Example: $0 build-frontend coco.api.example.com"
+            exit 1
+        fi
+        
+        api_domain="$1"
+        
+        # Remove protocol if provided
+        api_domain="${api_domain#https://}"
+        api_domain="${api_domain#http://}"
+        
+        # Set environment variables for the build
+        export VITE_API_BASE_URL="https://${api_domain}"
+        export VITE_WS_BASE_URL="wss://${api_domain}"
+        
+        echo "Building frontend with:"
+        echo "  VITE_API_BASE_URL=${VITE_API_BASE_URL}"
+        echo "  VITE_WS_BASE_URL=${VITE_WS_BASE_URL}"
+        
+        # Change to frontend directory and build
+        if [ -d "frontend/reactapp" ]; then
+            pushd frontend/reactapp
+            npm run build
+            popd
+        else
+            echo "Error: frontend/reactapp directory not found"
+            exit 1
+        fi
+        ;;
+    "deploy-frontend")
+        # Change to frontend directory and deploy
+        if [ -d "frontend/reactapp" ]; then
+            pushd frontend/reactapp
+            npm run deploy
+            popd
+        else
+            echo "Error: frontend/reactapp directory not found"
+            exit 1
+        fi
         ;;
     *)
         echo "Error: Unknown subcommand '$subcommand'"
