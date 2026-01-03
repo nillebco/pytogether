@@ -37,6 +37,8 @@ runcmd:
   - sed -i '$a AllowUsers devops' /etc/ssh/sshd_config
   - systemctl restart ssh
   - sudo systemctl enable --now cni-dhcp.socket
+  - echo 'net.ipv4.ip_unprivileged_port_start=80' >> /etc/sysctl.conf
+  - sysctl -p
   - mkdir -p /home/devops/apps
   - chown -R devops:devops /home/devops/apps
   - sudo -u devops pip3 install --user uvx
