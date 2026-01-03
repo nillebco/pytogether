@@ -1,0 +1,11 @@
+hcloud_token = "your-hetzner-api-token-here"
+
+# Optional: restrict SSH access to your IP address
+# my_ip_address = "1.2.3.4"
+
+# Optional: customize server settings
+# location = "nbg1"
+# server_type = "cax11"
+# os_type = "ubuntu-24.04"
+# ssh_key_path = "~/.ssh/id_rsa.pub"
+
